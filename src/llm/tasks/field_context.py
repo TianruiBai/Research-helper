@@ -119,7 +119,7 @@ async def analyze_field_context(
         logger.info("Field-context analysis using model: %s", llm_client.model)
 
     try:
-        result = await llm_client.complete_json(prompt, temperature=0.5, max_tokens=8192)
+        result = await llm_client.complete_json(prompt, temperature=0.5, max_tokens=16384)
         return {
             "motivation_depth": result.get("motivation_depth", ""),
             "confidence_assessment": result.get("confidence_assessment", ""),

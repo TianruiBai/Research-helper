@@ -271,19 +271,20 @@ if "!GPU_PLATFORM!"=="intel_arc" (
     set "LLAMA_FILTER=*sycl*x64*"
     set "LLAMA_DIR=%USERPROFILE%\llama-cpp-sycl"
     set "LLAMA_NGL=99"
-    set "LLAMA_CTX=8192"
-    set "LLAMA_NP=4"
+    set "LLAMA_CTX=32768"
+    set "LLAMA_NP=1"
 ) else if "!GPU_PLATFORM!"=="nvidia" (
     set "LLAMA_FILTER=llama-*-bin-win-cuda-12*x64*"
     set "LLAMA_DIR=%USERPROFILE%\llama-cpp-cuda"
     set "LLAMA_DEVICE_ARG= --device CUDA0"
-    REM -- Adaptive NGL for Crow-9B Q4_K_M (~6 GB; full offload needs ~7 GB VRAM)
+    REM -- 16 GB VRAM: model ~5.2 GB + KV-cache @ 65536 ctx ~8 GB = 13.2 GB total (safe)
+    REM -- np=1 keeps KV cache at one slot; academic analysis is single-user / sequential
     set "LLAMA_NGL=99"
-    set "LLAMA_CTX=8192"
-    set "LLAMA_NP=4"
+    set "LLAMA_CTX=65536"
+    set "LLAMA_NP=1"
     if !VRAM_GB! LSS 8 (
         set "LLAMA_NGL=28"
-        set "LLAMA_CTX=4096"
+        set "LLAMA_CTX=16384"
         set "LLAMA_NP=1"
     )
     if !VRAM_GB! LSS 6 set "LLAMA_NGL=18"

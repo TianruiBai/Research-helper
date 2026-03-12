@@ -156,7 +156,7 @@ class LLMClient:
         prompt: str,
         schema: dict[str, Any] | None = None,
         temperature: float = 0.3,
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
     ) -> dict | list:
         """Send a prompt with JSON format enforcement and return parsed JSON."""
         # For reasoning models (Qwen3, DeepSeek-R1) add an explicit
