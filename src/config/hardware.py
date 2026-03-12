@@ -20,8 +20,8 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 # Thresholds (in GB)
-MIN_VRAM_GB = 8.0   # Intel Arc Pro B50 has 8 GB VRAM
-MIN_RAM_GB = 32.0
+MIN_VRAM_GB = 4.0   # 4+ GB VRAM is useful for partial offload
+MIN_RAM_GB = 16.0   # 16+ GB RAM allows CPU-only inference for smaller models
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ def detect_hardware() -> HardwareInfo:
     ram_gb = _detect_ram_gb()
     gpus = _detect_gpus()
 
-    max_vram = max((g["vram_gb"] for g in gpus), default=0.0)
+    max_vram = max((g["vram_gb"] for g in gpus if g.get("type") != "igpu"), default=0.0)
 
     if max_vram >= MIN_VRAM_GB:
         capable = True
@@ -183,19 +183,37 @@ def _ram_macos() -> float:
 # GPU / VRAM detection
 # ---------------------------------------------------------------------------
 def _detect_gpus() -> list[dict]:
-    """Return a list of {name, vram_gb} dicts for detected GPUs."""
+    """Return a list of {name, vram_gb, type} dicts for detected GPUs.
+    
+    Aggregates GPUs from all backends so both dGPU and iGPU are visible.
+    'type' is 'dgpu' or 'igpu' (best-effort classification).
+    """
     gpus: list[dict] = []
+    seen_names: set[str] = set()
 
-    # 1. Try nvidia-smi (NVIDIA GPUs)
-    gpus.extend(_nvidia_smi_gpus())
+    # 1. Try nvidia-smi (NVIDIA dGPUs)
+    for g in _nvidia_smi_gpus():
+        g["type"] = "dgpu"
+        gpus.append(g)
+        seen_names.add(g["name"].lower())
 
     # 2. Try AMD ROCm (Linux)
-    if not gpus:
-        gpus.extend(_amd_rocm_gpus())
+    for g in _amd_rocm_gpus():
+        g["type"] = "dgpu"
+        gpus.append(g)
+        seen_names.add(g["name"].lower())
 
     # 3. Try Intel Arc / XPU (torch.xpu)
-    if not gpus:
-        gpus.extend(_intel_xpu_gpus())
+    for g in _intel_xpu_gpus():
+        g["type"] = "dgpu"
+        gpus.append(g)
+        seen_names.add(g["name"].lower())
+
+    # 4. On Windows, scan WMI for any GPUs not already found (iGPUs, fallback)
+    if platform.system() == "Windows" or os.name == "nt":
+        for g in _wmi_gpus():
+            if g["name"].lower() not in seen_names:
+                gpus.append(g)
 
     return gpus
 
@@ -288,4 +306,61 @@ def _amd_rocm_gpus() -> list[dict]:
         return gpus
     except Exception as e:
         logger.debug("rocm-smi failed: %s", e)
+        return []
+
+
+# Virtual / remote display adapters to skip in WMI scan
+_VIRTUAL_ADAPTER_KEYWORDS = {"virtual", "parsec", "remote", "microsoft basic"}
+
+# iGPU identifiers (case-insensitive substrings)
+_IGPU_KEYWORDS = {"intel uhd", "intel iris", "intel hd", "amd radeon(tm)", "amd radeon graphics"}
+
+
+def _wmi_gpus() -> list[dict]:
+    """Windows WMI fallback: detect GPUs via Win32_VideoController.
+
+    Classifies each as 'dgpu' or 'igpu'.  AdapterRAM is uint32 so
+    VRAM caps at 4 GB — use nvidia-smi/rocm-smi for accurate VRAM.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-Command",
+                "Get-CimInstance Win32_VideoController | "
+                "Select-Object Name, AdapterRAM | "
+                "ForEach-Object { $_.Name + '|' + $_.AdapterRAM }",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+
+        gpus: list[dict] = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("|", 1)
+            name = parts[0].strip()
+            if not name:
+                continue
+
+            # Skip virtual adapters
+            name_lower = name.lower()
+            if any(kw in name_lower for kw in _VIRTUAL_ADAPTER_KEYWORDS):
+                continue
+
+            # Parse VRAM (unreliable for >4 GB, but informational)
+            vram_gb = 0.0
+            if len(parts) >= 2 and parts[1].strip():
+                try:
+                    vram_gb = round(int(parts[1].strip()) / (1024 ** 3), 1)
+                except ValueError:
+                    pass
+
+            gpu_type = "igpu" if any(kw in name_lower for kw in _IGPU_KEYWORDS) else "dgpu"
+            gpus.append({"name": name, "vram_gb": vram_gb, "type": gpu_type})
+
+        return gpus
+    except Exception as e:
+        logger.debug("WMI GPU detection failed: %s", e)
         return []

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 
 
@@ -67,6 +69,42 @@ class APIClient:
             body["web_sources"] = web_sources
         return self._post("/search", body)
 
+    def stream_search(
+        self,
+        query: str,
+        year_start: int = 2015,
+        year_end: int = 2026,
+        max_results: int = 200,
+        sources: list[str] | None = None,
+        web_sources: list[str] | None = None,
+    ):
+        """Stream search progress events (NDJSON) and final result payload."""
+        body: dict = {
+            "query": query,
+            "year_start": year_start,
+            "year_end": year_end,
+            "max_results_per_source": max_results,
+        }
+        if sources:
+            body["sources"] = sources
+        if web_sources is not None:
+            body["web_sources"] = web_sources
+
+        with httpx.Client(timeout=None) as c:
+            with c.stream(
+                "POST",
+                f"{self.base_url}/search/stream",
+                json=body,
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        yield {"type": "progress", "message": line, "count": 0}
+
     def analyze(
         self,
         query: str = "",
@@ -79,6 +117,34 @@ class APIClient:
         if year_end:
             body["year_end"] = year_end
         return self._post("/analyze", body)
+
+    def stream_analyze(
+        self,
+        query: str = "",
+        year_start: int | None = None,
+        year_end: int | None = None,
+    ):
+        """Stream analytics pipeline progress events (NDJSON)."""
+        body: dict = {"query": query}
+        if year_start:
+            body["year_start"] = year_start
+        if year_end:
+            body["year_end"] = year_end
+
+        with httpx.Client(timeout=None) as c:
+            with c.stream(
+                "POST",
+                f"{self.base_url}/analyze/stream",
+                json=body,
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        yield {"type": "progress", "message": line, "count": 0}
 
     def get_library(self, search: str | None = None) -> list:
         params = {"search": search} if search else None

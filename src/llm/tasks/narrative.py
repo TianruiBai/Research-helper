@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-import random
 
+from src.analytics.paper_selector import select_papers_for_llm
 from src.llm.client import LLMClient
 from src.llm.prompts import NARRATIVE_SUMMARY_PROMPT
 from src.storage.models import FieldStats, Paper
@@ -16,10 +16,12 @@ async def generate_narrative(
     papers: list[Paper],
     stats: FieldStats,
     llm_client: LLMClient,
-    sample_size: int = 10,
+    sample_size: int = 20,
 ) -> dict:
     """Generate a 3-5 paragraph field overview.
 
+    Uses year-stratified, citation-weighted selection so every year is
+    represented and the LLM sees the most influential papers.
     Returns:
         {
             "narrative": str,
@@ -27,14 +29,12 @@ async def generate_narrative(
             "open_questions": list[str],
         }
     """
-    # Sample representative abstracts
-    papers_with_abs = [p for p in papers if p.abstract]
-    if not papers_with_abs:
+    sample = select_papers_for_llm(papers, max_papers=sample_size)
+    if not sample:
         return _empty()
 
-    sample = random.sample(papers_with_abs, min(sample_size, len(papers_with_abs)))
     sample_text = "\n\n".join(
-        f"[{i}] {p.title}\n{p.abstract[:400]}"
+        f"[{i}] ({p.year or '?'}) {p.title}\n{p.abstract[:400]}"
         for i, p in enumerate(sample)
     )
 

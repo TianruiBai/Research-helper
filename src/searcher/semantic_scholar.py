@@ -45,9 +45,9 @@ class SemanticScholarFetcher(AbstractFetcher):
                 elif year_end:
                     params["year"] = f"-{year_end}"
 
-                resp = await client.get(self.BASE_URL, params=params)
+                resp = await self._request_with_retry(client, "GET", self.BASE_URL, params=params)
                 if resp.status_code == 429:
-                    break  # rate limited
+                    break  # retries exhausted
                 resp.raise_for_status()
                 data = resp.json()
                 batch = data.get("data", [])

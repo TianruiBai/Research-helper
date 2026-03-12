@@ -17,6 +17,14 @@ def render_score_cards(stats: dict) -> None:
         f"### 🏆 Comprehensive Score: **{comprehensive:.0f}/100** {colour}"
     )
     st.progress(comprehensive / 100)
+
+    # Field-aware weighting info
+    field_cat = stats.get("field_category")
+    field_pace = stats.get("field_pace")
+    if field_cat:
+        pace_icon = {"fast": "⚡", "medium": "🔄", "slow": "🐢"}.get(field_pace or "", "")
+        display = stats.get("field_display_name", field_cat)
+        st.caption(f"{pace_icon} Weighted for **{display}** ({field_pace} pace)")
     st.divider()
 
     # --- Individual dimension scores (3+3 layout) ---

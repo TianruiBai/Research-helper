@@ -29,12 +29,20 @@ class OpenAlexFetcher(AbstractFetcher):
         per_page = min(max_results, 200)
         page = 1
 
+        # Build a richer filter: title.search gives higher weight to title matches
+        # while the `search` param covers abstract + keywords too.
+        import re as _re
+        # Split comma/semicolon separated keywords and also search via title.search
+        raw_terms = [t.strip() for t in _re.split(r"[,;]+", query) if t.strip()]
+        title_search = raw_terms[0] if raw_terms else query  # use first keyword for title.search
+
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             while len(results) < max_results:
                 params: dict = {
                     "search": query,
                     "per_page": per_page,
                     "page": page,
+                    "sort": "relevance_score:desc",
                 }
                 filt_parts: list[str] = []
                 if year_start and year_end:
@@ -46,9 +54,9 @@ class OpenAlexFetcher(AbstractFetcher):
                 if filt_parts:
                     params["filter"] = ",".join(filt_parts)
 
-                resp = await client.get(self.BASE_URL, params=params)
+                resp = await self._request_with_retry(client, "GET", self.BASE_URL, params=params)
                 if resp.status_code == 429:
-                    break
+                    break  # retries exhausted
                 resp.raise_for_status()
                 data = resp.json()
                 batch = data.get("results", [])

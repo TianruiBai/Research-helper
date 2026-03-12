@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from src.analytics.paper_selector import select_papers_for_llm
 from src.llm.client import LLMClient
 from src.llm.prompts import MARKET_EXTRACTION_PROMPT, format_abstracts_batch
 from src.storage.models import Paper
@@ -15,10 +16,12 @@ async def extract_market_signals(
     papers: list[Paper],
     llm_client: LLMClient,
     batch_size: int = 8,
-    max_papers: int = 500,
+    max_papers: int = 80,
 ) -> dict:
     """Extract industry/market signals from abstracts.
 
+    Uses year-stratified, citation-weighted selection so every year is
+    represented and the LLM sees the most influential papers.
     Returns:
         {
             "companies": list[str],
@@ -27,9 +30,10 @@ async def extract_market_signals(
             "total_papers_analysed": int,
         }
     """
+    selected = select_papers_for_llm(papers, max_papers=max_papers)
     abstracts = [
         (i, p.abstract)
-        for i, p in enumerate(papers[:max_papers])
+        for i, p in enumerate(selected)
         if p.abstract
     ]
     if not abstracts:

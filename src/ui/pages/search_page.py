@@ -42,33 +42,100 @@ ALL_WEB_SOURCES = [
 ]
 
 
+def _render_export_buttons(stats: dict, papers: list[dict]) -> None:
+    """Render CSV / JSON / HTML download buttons from search/analysis results."""
+    import csv
+    import io
+    import json as _json
+
+    query_slug = (stats.get("query") or "report")[:40].replace(" ", "_")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        data = _json.dumps(stats, indent=2, ensure_ascii=False).encode("utf-8")
+        st.download_button(
+            label="⬇️ Stats (JSON)",
+            data=data,
+            file_name=f"stats_{query_slug}.json",
+            mime="application/json",
+        )
+
+    with col2:
+        if papers:
+            buf = io.StringIO()
+            fields = ["title", "authors", "year", "venue", "citations", "doi", "url"]
+            writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            for p in papers:
+                row = {k: p.get(k, "") for k in fields}
+                if isinstance(row.get("authors"), list):
+                    row["authors"] = "; ".join(str(a) for a in row["authors"])
+                writer.writerow(row)
+            st.download_button(
+                label="⬇️ Papers (CSV)",
+                data=buf.getvalue().encode("utf-8"),
+                file_name=f"papers_{query_slug}.csv",
+                mime="text/csv",
+            )
+        else:
+            st.caption("No papers list available.")
+
+    with col3:
+        try:
+            from src.reports.html_exporter import export_html
+            html_bytes = export_html(stats, papers).encode("utf-8")
+            st.download_button(
+                label="⬇️ Report (HTML)",
+                data=html_bytes,
+                file_name=f"report_{query_slug}.html",
+                mime="text/html",
+            )
+        except Exception as _e:
+            st.caption(f"HTML export unavailable: {_e}")
+
+
 def render(client: APIClient) -> None:
     st.header("🔍 Search Academic Databases")
+
+    # Initialise session-state defaults once so values persist across page switches
+    if "sq_query" not in st.session_state:
+        st.session_state["sq_query"] = ""
+    if "sq_year_start" not in st.session_state:
+        st.session_state["sq_year_start"] = 2015
+    if "sq_year_end" not in st.session_state:
+        st.session_state["sq_year_end"] = datetime.now().year
+    if "sq_max_results" not in st.session_state:
+        st.session_state["sq_max_results"] = 200
+    if "sq_sources" not in st.session_state:
+        st.session_state["sq_sources"] = ["arxiv", "semantic_scholar", "openalex", "pubmed", "crossref"]
+    if "sq_web_sources" not in st.session_state:
+        st.session_state["sq_web_sources"] = ALL_WEB_SOURCES
 
     with st.form("search_form"):
         query = st.text_input(
             "Research query",
             placeholder="e.g. transformer architecture, neural networks; attention mechanism",
             help="Separate multiple keywords with commas or semicolons.",
+            key="sq_query",
         )
         col1, col2, col3 = st.columns(3)
         with col1:
-            year_start = st.number_input("From year", 2000, datetime.now().year, 2015)
+            year_start = st.number_input("From year", 2000, datetime.now().year, key="sq_year_start")
         with col2:
-            year_end = st.number_input("To year", 2000, datetime.now().year + 1, datetime.now().year)
+            year_end = st.number_input("To year", 2000, datetime.now().year + 1, key="sq_year_end")
         with col3:
-            max_results = st.number_input("Max per source", 50, 1000, 200, step=50)
+            max_results = st.number_input("Max per source", 50, 1000, step=50, key="sq_max_results")
 
         sources = st.multiselect(
             "Academic Sources",
             ALL_SOURCES,
-            default=["arxiv", "semantic_scholar", "openalex", "pubmed", "crossref"],
+            key="sq_sources",
         )
 
         web_sources = st.multiselect(
             "News / Web Sources",
             ALL_WEB_SOURCES,
-            default=ALL_WEB_SOURCES,
+            key="sq_web_sources",
             help="Include public news and web articles for sentiment & comprehensive scoring.",
         )
 
@@ -79,24 +146,75 @@ def render(client: APIClient) -> None:
         keywords = [kw.strip() for kw in re.split(r"[;,]", query) if kw.strip()]
         normalized_query = " ".join(keywords)
 
-        with st.spinner("Searching databases and running analytics... This may take a few minutes."):
-            try:
-                result = client.search(
-                    query=normalized_query,
-                    year_start=year_start,
-                    year_end=year_end,
-                    max_results=max_results,
-                    sources=sources,
-                    web_sources=web_sources,
-                )
-                st.session_state["last_search"] = result
-                st.success(
-                    f"Found {len(result['papers'])} papers "
-                    f"(session: {result['session_id']})"
-                )
-            except Exception as e:
-                st.error(f"Search failed: {e}")
-                return
+        progress_box = st.empty()
+        log_box = st.empty()
+        llm_header = st.empty()
+        llm_box = st.empty()
+        logs: list[str] = []
+        llm_text = ""
+        in_llm_task = False
+        result: dict | None = None
+
+        try:
+            progress_box.info("Starting search and analysis...")
+            for event in client.stream_search(
+                query=normalized_query,
+                year_start=year_start,
+                year_end=year_end,
+                max_results=max_results,
+                sources=sources,
+                web_sources=web_sources,
+            ):
+                event_type = (event.get("type") or "").lower()
+                if event_type == "progress":
+                    msg = str(event.get("message", "Working..."))
+                    cnt = int(event.get("count", 0) or 0)
+                    line = f"- {msg} ({cnt})" if cnt > 0 else f"- {msg}"
+                    logs.append(line)
+                    logs = logs[-24:]
+                    progress_box.info(f"In progress: {msg}")
+                    log_box.markdown("\n".join(logs))
+                    if msg.startswith("LLM:"):
+                        in_llm_task = True
+                        llm_text = ""
+                        llm_header.caption(f"🤖 {msg}")
+                        llm_box.empty()
+                    else:
+                        if in_llm_task:
+                            in_llm_task = False
+                            llm_header.empty()
+                            llm_box.empty()
+                elif event_type == "token":
+                    llm_text += event.get("text", "")
+                    llm_box.code(llm_text[-3000:], language="json")
+                elif event_type == "result":
+                    result = event.get("data")
+                elif event_type == "error":
+                    raise RuntimeError(str(event.get("message", "Unknown error")))
+                elif event_type == "done":
+                    break
+
+            if not result:
+                raise RuntimeError("No result returned from streaming search")
+
+            st.session_state["last_search"] = result
+            # Pre-fill dashboard query from search so switching pages works
+            st.session_state["dashboard_query"] = normalized_query
+            progress_box.empty()
+            log_box.empty()
+            llm_header.empty()
+            llm_box.empty()
+            st.success(
+                f"Found {len(result['papers'])} papers "
+                f"(session: {result['session_id']})"
+            )
+        except Exception as e:
+            progress_box.empty()
+            log_box.empty()
+            llm_header.empty()
+            llm_box.empty()
+            st.error(f"Search failed: {e}")
+            return
 
     # Display results if available
     result = st.session_state.get("last_search")
@@ -105,6 +223,11 @@ def render(client: APIClient) -> None:
         return
 
     stats = result["stats"]
+    papers_list = result.get("papers", [])
+
+    # ── Export ──
+    with st.expander("📥 Export Results", expanded=False):
+        _render_export_buttons(stats, papers_list)
 
     # Scores
     render_score_cards(stats)

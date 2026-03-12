@@ -40,14 +40,22 @@ class DedupSettings(BaseSettings):
 
 
 class LLMSettings(BaseSettings):
-    default_model: str = "qwen35-reasoning"
+    default_model: str = "crow-9b-opus"
     ollama_base_url: str = "http://localhost:8080"  # llama-server default; Ollama uses 11434
     max_concurrent_llm_calls: int = 4
     abstract_sample_size: int = 500
-    timeout_seconds: int = 120
+    timeout_seconds: int = 180
     temperature_classification: float = 0.3
     temperature_narrative: float = 0.7
     auto_detect_hardware: bool = True
+    web_search: bool = True
+    # Field-context analysis reuses the primary model; these are kept for
+    # backward-compat if a user runs a second server on 8081
+    field_context_model: str = "crow-9b-opus"
+    field_context_base_url: str = "http://localhost:8081"
+    field_context_timeout_seconds: int = 180
+    field_context_web_search: bool = True
+    field_context_ngl: int = -1
 
 
 class StorageSettings(BaseSettings):

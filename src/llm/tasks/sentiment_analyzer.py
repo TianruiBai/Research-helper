@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+from src.analytics.paper_selector import select_papers_for_llm
 from src.llm.client import LLMClient
 from src.llm.prompts import LLM_SENTIMENT_ANALYSIS_PROMPT, format_abstracts_batch
 from src.storage.models import Paper
@@ -21,18 +22,21 @@ async def analyze_sentiment_llm(
     papers: list[Paper],
     llm_client: LLMClient,
     batch_size: int = 8,
-    max_papers: int = 150,
+    max_papers: int = 80,
 ) -> dict:
     """Classify each abstract as positive/negative/neutral using the LLM.
 
+    Uses year-stratified, citation-weighted selection so every year is
+    represented and the LLM sees the most influential papers.
     Returns a dict compatible with analyze_sentiment_heuristic:
         {positive_count, negative_count, neutral_count, total_sentences,
          positive_ratio, negative_ratio, neutral_ratio, sentiment_score,
          positive_samples, negative_samples}
     """
+    selected = select_papers_for_llm(papers, max_papers=max_papers)
     abstracts = [
         (i, p.abstract)
-        for i, p in enumerate(papers[:max_papers])
+        for i, p in enumerate(selected)
         if p.abstract
     ]
     if not abstracts:
@@ -41,7 +45,7 @@ async def analyze_sentiment_llm(
     counts: dict[str, int] = {"positive": 0, "negative": 0, "neutral": 0}
     positive_samples: list[dict] = []
     negative_samples: list[dict] = []
-    paper_map = {i: p for i, p in enumerate(papers[:max_papers]) if p.abstract}
+    paper_map = {i: p for i, p in enumerate(selected) if p.abstract}
 
     for batch_start in range(0, len(abstracts), batch_size):
         batch = abstracts[batch_start: batch_start + batch_size]

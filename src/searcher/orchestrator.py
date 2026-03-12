@@ -1,10 +1,16 @@
-"""Search orchestrator — runs fetchers in parallel and deduplicates results."""
+"""Search orchestrator — runs fetchers in parallel and deduplicates results.
+
+Academic fetchers iterate year-by-year within the user's date range to ensure
+balanced coverage (APIs tend to bias toward popular/recent papers).
+News fetchers query the full range at once.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import math
 from typing import AsyncIterator, Callable
 
 from rapidfuzz import fuzz
@@ -31,6 +37,9 @@ FETCHER_MAP: dict[str, type[AbstractFetcher]] = {
     "bing_news": BingNewsFetcher,
 }
 
+# News/web fetchers don't benefit from per-year iteration
+NEWS_FETCHERS = {"google_news", "bing_news"}
+
 
 class SearchOrchestrator:
     def __init__(
@@ -52,14 +61,28 @@ class SearchOrchestrator:
         year_end: int | None = None,
         progress_callback: Callable[[str, int], None] | None = None,
     ) -> list[Paper]:
-        """Run all fetchers concurrently, deduplicate, return merged papers."""
+        """Run all fetchers concurrently, deduplicate, return merged papers.
+
+        Academic fetchers iterate year-by-year so every year in the user's
+        range is represented.  News fetchers query the full range once.
+        """
         fetchers = self._build_fetchers()
         all_papers: list[Paper] = []
 
-        tasks = [
-            self._fetch_one(fetcher, query, year_start, year_end, progress_callback)
-            for fetcher in fetchers
-        ]
+        tasks = []
+        for fetcher in fetchers:
+            is_news = fetcher.name in NEWS_FETCHERS
+            if is_news or year_start is None or year_end is None:
+                # Single-shot fetch (news or no year range given)
+                tasks.append(
+                    self._fetch_one(fetcher, query, year_start, year_end, progress_callback)
+                )
+            else:
+                # Per-year academic fetch
+                tasks.append(
+                    self._fetch_per_year(fetcher, query, year_start, year_end, progress_callback)
+                )
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for fetcher, result in zip(fetchers, results):
@@ -100,6 +123,50 @@ class SearchOrchestrator:
         return await fetcher.fetch_and_normalise(
             query, self._max_results, year_start, year_end
         )
+
+    async def _fetch_per_year(
+        self,
+        fetcher: AbstractFetcher,
+        query: str,
+        year_start: int,
+        year_end: int,
+        progress_callback: Callable[[str, int], None] | None,
+    ) -> list[Paper]:
+        """Fetch papers year-by-year so every year is represented.
+
+        Allocates max_results evenly across years.  Each single-year fetch
+        runs sequentially per fetcher to avoid rate-limiting, but different
+        fetchers are parallelised at the caller level.
+        """
+        num_years = year_end - year_start + 1
+        per_year = max(self._max_results // num_years, 10)
+
+        if progress_callback:
+            progress_callback(f"{fetcher.name}: searching {num_years} years...", 0)
+
+        all_papers: list[Paper] = []
+        for idx, year in enumerate(range(year_start, year_end + 1)):
+            # Rate-limit: pause between per-year requests (PubMed allows ~3 req/s
+            # without an API key; other APIs have similar limits)
+            if idx > 0:
+                await asyncio.sleep(1.5)
+            try:
+                batch = await fetcher.fetch_and_normalise(
+                    query, per_year, year, year
+                )
+                all_papers.extend(batch)
+                if progress_callback:
+                    progress_callback(
+                        f"{fetcher.name}: {year} ({len(batch)} papers)", len(batch)
+                    )
+            except Exception as e:
+                logger.warning("Fetcher %s year %d failed: %s", fetcher.name, year, e)
+
+        logger.info(
+            "Fetcher %s per-year: %d papers across %d–%d",
+            fetcher.name, len(all_papers), year_start, year_end,
+        )
+        return all_papers
 
     def _deduplicate(self, papers: list[Paper]) -> list[Paper]:
         """Remove duplicates using DOI match then fuzzy title matching."""

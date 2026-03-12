@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from src.analytics.paper_selector import select_papers_for_llm
 from src.llm.client import LLMClient
 from src.llm.prompts import CONFIDENCE_DETECTION_PROMPT, format_abstracts_batch
 from src.storage.models import Paper
@@ -15,10 +16,12 @@ async def detect_confidence(
     papers: list[Paper],
     llm_client: LLMClient,
     batch_size: int = 8,
-    max_papers: int = 500,
+    max_papers: int = 80,
 ) -> dict:
     """Detect claim strength in abstract result sentences.
 
+    Uses year-stratified, citation-weighted selection so every year is
+    represented and the LLM sees the most influential papers.
     Returns:
         {
             "strong_count": int,
@@ -29,9 +32,10 @@ async def detect_confidence(
             "claims": list[dict],
         }
     """
+    selected = select_papers_for_llm(papers, max_papers=max_papers)
     abstracts = [
         (i, p.abstract)
-        for i, p in enumerate(papers[:max_papers])
+        for i, p in enumerate(selected)
         if p.abstract
     ]
     if not abstracts:

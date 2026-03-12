@@ -10,13 +10,17 @@ signals from both for comprehensive scoring.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
+from typing import Callable
 
 from src.analytics.trend import compute_trend_stats
 from src.analytics.citations import compute_citation_stats
 from src.analytics.venues import compute_venue_stats
 from src.analytics.nlp_fast import compute_nlp_stats
+from src.analytics.field_awareness import detect_field
+from src.analytics.paper_selector import select_papers_for_llm
 from src.analytics.sentiment import (
     analyze_sentiment_heuristic,
     analyze_sentiment_by_source_type,
@@ -46,9 +50,16 @@ NEWS_VENUE_TYPES = {"news", "web", "blog"}
 class AnalyticsPipeline:
     """Runs the full analytics pipeline on a set of papers."""
 
-    def __init__(self, llm_client: LLMClient | None = None):
+    def __init__(
+        self,
+        llm_client: LLMClient | None = None,
+        field_context_client: LLMClient | None = None,
+        use_parallel: bool = False,
+    ):
         self.llm_client = llm_client
+        self.field_context_client = field_context_client
         self._llm_available = False
+        self.use_parallel = use_parallel
 
     async def check_llm(self) -> bool:
         """Check if the LLM is available."""
@@ -66,6 +77,8 @@ class AnalyticsPipeline:
         query: str = "",
         year_start: int | None = None,
         year_end: int | None = None,
+        progress_callback: Callable[[str, int], None] | None = None,
+        token_callback: Callable[[str], None] | None = None,
     ) -> FieldStats:
         """Run the full analytics pipeline.
 
@@ -75,6 +88,10 @@ class AnalyticsPipeline:
         """
         if not papers:
             return FieldStats(query=query)
+
+        def _emit(msg: str, count: int = 0) -> None:
+            if progress_callback:
+                progress_callback(msg, count)
 
         # Split into academic vs news/web
         academic_papers = [
@@ -104,13 +121,35 @@ class AnalyticsPipeline:
         )
 
         # ── Part A: Statistical analytics on ACADEMIC papers ──
+        _emit(f"Statistical analysis ({len(academic_papers or papers)} papers)...", len(papers))
         analysis_papers = academic_papers if academic_papers else papers
         trend = compute_trend_stats(analysis_papers)
         citation = compute_citation_stats(analysis_papers)
         venue = compute_venue_stats(analysis_papers)
         nlp = compute_nlp_stats(analysis_papers)
 
+        # ── Part A2: Field awareness — detect research domain ──
+        _emit("Detecting research field...")
+        field_sample = select_papers_for_llm(analysis_papers, max_papers=50)
+        abstracts_sample = [
+            p.abstract for p in field_sample if p.abstract
+        ]
+        field_profile = detect_field(query, abstracts_sample)
+        field_weights = {
+            "interest": field_profile.weight_interest,
+            "motivation": field_profile.weight_motivation,
+            "confidence": field_profile.weight_confidence,
+            "market": field_profile.weight_market,
+            "sentiment": field_profile.weight_sentiment,
+        }
+        logger.info(
+            "Field detected: %s (pace=%s)",
+            field_profile.field_category, field_profile.pace,
+        )
+        _emit(f"Field: {field_profile.field_category.replace('_', ' ').title()} (pace={field_profile.pace})")
+
         # ── Part B: Sentiment analysis on ALL articles ──
+        _emit(f"Sentiment analysis ({len(papers)} articles)...")
         sentiment_by_type = analyze_sentiment_by_source_type(papers)
         news_sentiment = sentiment_by_type["news"]
         combined_sentiment = sentiment_by_type["combined"]
@@ -119,21 +158,35 @@ class AnalyticsPipeline:
         # ── Part C: LLM or heuristic for motivation, confidence, market ──
         if self._llm_available and self.llm_client:
             motivation, confidence, market, themes, narrative = await self._run_llm(
-                analysis_papers, query, year_start, year_end, trend, venue
+                analysis_papers, query, year_start, year_end, trend, venue,
+                progress_callback=progress_callback,
+                token_callback=token_callback,
             )
             # Supplement: LLM-classified paper sentiment gives richer sample sentences
+            _emit("LLM: analyzing paper sentiment...")
             from src.llm.tasks.sentiment_analyzer import analyze_sentiment_llm
-            llm_sent = await analyze_sentiment_llm(analysis_papers, self.llm_client)
+            if token_callback:
+                self.llm_client._stream_callback = token_callback
+            try:
+                llm_sent = await analyze_sentiment_llm(analysis_papers, self.llm_client)
+            finally:
+                self.llm_client._stream_callback = None
             if llm_sent["positive_samples"] or llm_sent["negative_samples"]:
                 combined_sentiment = {
                     **combined_sentiment,
                     "positive_samples": llm_sent["positive_samples"],
                     "negative_samples": llm_sent["negative_samples"],
                 }
+            # Deep field-context analysis — deferred until after FieldStats assembly
+            from src.llm.tasks.field_context import analyze_field_context
+            _run_field_context = True
         else:
+            _emit("Running heuristic analysis (LLM not available)...")
             motivation, confidence, market, themes, narrative = self._run_heuristic(
                 analysis_papers
             )
+            field_context = {}
+            _run_field_context = False
 
         # ── Part D: Compute scores (academic + public blended) ──
         news_count = len(news_articles)
@@ -189,6 +242,7 @@ class AnalyticsPipeline:
             confidence=confidence_score,
             market=market_sc,
             public_sentiment=public_sentiment,
+            field_weights=field_weights,
         )
 
         # Assemble FieldStats
@@ -205,6 +259,9 @@ class AnalyticsPipeline:
             median_citations=citation["median_citations"],
             h_index_estimate=citation["h_index_estimate"],
             top_cited_papers=citation["top_cited_papers"],
+            most_cited_authors=citation.get("most_cited_authors", []),
+            top_cited_details=citation.get("top_cited_details", []),
+            venue_impact=citation.get("venue_impact", []),
             top_venues=venue["top_venues"],
             top_authors=venue["top_authors"],
             country_distribution=venue["country_distribution"],
@@ -244,7 +301,40 @@ class AnalyticsPipeline:
             top_funders=market.get("funder_counts"),
             field_narrative=narrative.get("narrative") if narrative else None,
             maturity_label=narrative.get("maturity_label") if narrative else None,
+            # Field awareness
+            field_category=field_profile.field_category,
+            field_display_name=field_profile.field_category.replace("_", " ").title(),
+            field_pace=field_profile.pace,
         )
+
+        # ── Part E: Deep field-context analysis (LLM, needs assembled stats) ──
+        if _run_field_context:
+            # Prefer the dedicated smaller model; fall back to primary
+            fc_client = self.field_context_client or self.llm_client
+            if fc_client:
+                _emit("LLM: deep field-context analysis...")
+                if token_callback:
+                    fc_client._stream_callback = token_callback
+                try:
+                    field_context = await analyze_field_context(
+                        papers=analysis_papers,
+                        stats=stats,
+                        field_profile=field_profile,
+                        llm_client=fc_client,
+                        most_cited_authors=citation.get("most_cited_authors", []),
+                        top_cited_details=citation.get("top_cited_details", []),
+                    )
+                finally:
+                    fc_client._stream_callback = None
+                stats.motivation_depth = field_context.get("motivation_depth")
+                stats.confidence_assessment = field_context.get("confidence_assessment")
+                stats.market_reality = field_context.get("market_reality")
+                stats.velocity_context = field_context.get("velocity_context")
+                stats.gaps_and_opportunities = field_context.get("gaps_and_opportunities")
+                stats.field_specific_risks = field_context.get("field_specific_risks")
+                stats.recommended_focus_areas = field_context.get("recommended_focus_areas")
+
+        _emit("Pipeline complete.", len(papers))
         return stats
 
     async def _run_llm(
@@ -255,8 +345,16 @@ class AnalyticsPipeline:
         year_end: int,
         trend: dict,
         venue: dict,
+        progress_callback: Callable[[str, int], None] | None = None,
+        token_callback: Callable[[str], None] | None = None,
     ) -> tuple[dict, dict, dict, list[str], dict]:
-        """Run LLM-backed analytics tasks."""
+        """Run LLM-backed analytics tasks.
+
+        When self.use_parallel is True (max_concurrent_llm_calls > 1),
+        the four independent tasks run concurrently via asyncio.gather.
+        Token streaming is disabled for parallel tasks to avoid interleaved
+        output; narrative always runs sequentially with streaming enabled.
+        """
         from src.llm.tasks.theme_extractor import extract_themes
         from src.llm.tasks.motivation_classifier import classify_motivation
         from src.llm.tasks.confidence_detector import detect_confidence
@@ -265,23 +363,85 @@ class AnalyticsPipeline:
 
         assert self.llm_client is not None
 
-        logger.info("Running LLM analytics with model: %s", self.llm_client.model)
+        def _emit(msg: str, count: int = 0) -> None:
+            if progress_callback:
+                progress_callback(msg, count)
 
-        themes = await extract_themes(papers, self.llm_client)
-        motivation = await classify_motivation(papers, self.llm_client)
-        confidence = await detect_confidence(papers, self.llm_client)
-        market = await extract_market_signals(papers, self.llm_client)
+        n = len(papers)
+        logger.info("Running LLM analytics with model: %s (parallel=%s)", self.llm_client.model, self.use_parallel)
 
-        # Build partial FieldStats for narrative generation
-        partial_stats = FieldStats(
-            query=query,
-            year_range=(year_start, year_end),
-            total_papers=trend["total_papers"],
-            growth_rate_pct=trend["growth_rate_pct"],
-            top_venues=venue["top_venues"],
-            top_themes=themes,
-        )
-        narrative = await generate_narrative(papers, partial_stats, self.llm_client)
+        if self.use_parallel:
+            # ── Parallel mode: run independent tasks concurrently ──
+            # Token streaming is suppressed during gather to avoid interleaved output.
+            _emit(f"LLM: parallel analysis — themes + motivation + confidence + market ({n} papers)...", n)
+            raw = await asyncio.gather(
+                extract_themes(papers, self.llm_client),
+                classify_motivation(papers, self.llm_client),
+                detect_confidence(papers, self.llm_client),
+                extract_market_signals(papers, self.llm_client),
+                return_exceptions=True,
+            )
+            themes: list[str] = raw[0] if not isinstance(raw[0], Exception) else []
+            motivation: dict = raw[1] if not isinstance(raw[1], Exception) else {
+                "motivation_sentences": [], "total_abstract_sentences": 1, "problem_sentence_count": 0
+            }
+            confidence: dict = raw[2] if not isinstance(raw[2], Exception) else {
+                "strong_count": 0, "moderate_count": 0, "hedged_count": 0,
+                "negative_count": 0, "total_result_sentences": 0, "claims": [],
+            }
+            market: dict = raw[3] if not isinstance(raw[3], Exception) else {
+                "companies": [], "funders": [], "funder_counts": [],
+                "patent_paper_count": 0, "total_papers_analysed": 0,
+            }
+            for i, exc in enumerate(raw):
+                if isinstance(exc, Exception):
+                    logger.warning("Parallel LLM task %d failed: %s", i, exc)
+
+            # Narrative is sequential (depends on themes) + token streaming re-enabled
+            partial_stats = FieldStats(
+                query=query,
+                year_range=(year_start, year_end),
+                total_papers=trend["total_papers"],
+                growth_rate_pct=trend["growth_rate_pct"],
+                top_venues=venue["top_venues"],
+                top_themes=themes,
+            )
+            _emit("LLM: generating narrative summary...")
+            self.llm_client._stream_callback = token_callback
+            try:
+                narrative = await generate_narrative(papers, partial_stats, self.llm_client)
+            finally:
+                self.llm_client._stream_callback = None
+
+        else:
+            # ── Sequential mode: stream tokens per task ──
+            self.llm_client._stream_callback = token_callback
+            try:
+                _emit(f"LLM: extracting themes ({n} papers)...", n)
+                themes = await extract_themes(papers, self.llm_client)
+
+                _emit(f"LLM: classifying motivation ({n} papers)...", n)
+                motivation = await classify_motivation(papers, self.llm_client)
+
+                _emit(f"LLM: detecting confidence ({n} papers)...", n)
+                confidence = await detect_confidence(papers, self.llm_client)
+
+                _emit(f"LLM: extracting market signals ({n} papers)...", n)
+                market = await extract_market_signals(papers, self.llm_client)
+
+                # Build partial FieldStats for narrative generation
+                partial_stats = FieldStats(
+                    query=query,
+                    year_range=(year_start, year_end),
+                    total_papers=trend["total_papers"],
+                    growth_rate_pct=trend["growth_rate_pct"],
+                    top_venues=venue["top_venues"],
+                    top_themes=themes,
+                )
+                _emit("LLM: generating narrative summary...")
+                narrative = await generate_narrative(papers, partial_stats, self.llm_client)
+            finally:
+                self.llm_client._stream_callback = None
 
         return motivation, confidence, market, themes, narrative
 

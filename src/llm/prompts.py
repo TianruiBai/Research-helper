@@ -181,3 +181,47 @@ def format_abstracts_batch(abstracts: list[tuple[int, str]], max_chars: int = 60
         parts.append(text)
         total += len(text)
     return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Field-context-aware deep analysis (uses smaller model for efficiency)
+# ---------------------------------------------------------------------------
+FIELD_CONTEXT_ANALYSIS_PROMPT = """You are a senior research strategist. Analyse this research field considering its domain characteristics.
+
+Field: {query}
+Detected domain: {field_category} ({field_display_name})
+Field pace: {field_pace} (typical cycle: {cycle_years} years)
+Total papers analysed: {total_papers}
+Growth rate: {growth_rate:.1f}%
+Top themes: {top_themes}
+Top venues: {top_venues}
+Most cited authors: {most_cited_authors}
+Most cited paper: {most_cited_paper} ({most_cited_paper_citations} citations)
+
+Sample abstracts:
+{sample_abstracts}
+
+Considering that this is a {field_pace}-paced field, provide a deep analysis covering:
+
+1. **Motivation depth**: How severe are the unsolved problems? In a {field_pace} field, what does the problem landscape look like? Are problems well-defined or still exploratory?
+
+2. **Confidence assessment**: Given this domain's evidence standards (e.g. {evidence_standard}), how strong are the claims? Are results reproducible? What is the evidence quality?
+
+3. **Market & real-world impact**: For {field_display_name}, what is the realistic path from research to application? How active is industry involvement compared to what's typical for this domain?
+
+4. **Research velocity context**: A {growth_rate:.1f}% growth rate in {field_display_name} means [{velocity_interpretation}]. Compare this to typical growth in this domain.
+
+5. **Key gaps & opportunities**: What specific unaddressed problems exist? What would a strategic researcher focus on next?
+
+Return a JSON object:
+{{
+  "motivation_depth": "<2-3 sentences analysing problem severity and landscape>",
+  "confidence_assessment": "<2-3 sentences on evidence quality for this domain>",
+  "market_reality": "<2-3 sentences on realistic commercialisation path>",
+  "velocity_context": "<1-2 sentences interpreting growth rate for this field>",
+  "gaps_and_opportunities": ["<gap/opportunity 1>", "<gap/opportunity 2>", ...],
+  "field_specific_risks": ["<risk 1>", "<risk 2>", ...],
+  "recommended_focus_areas": ["<area 1>", "<area 2>", ...]
+}}
+
+Return JSON only:"""

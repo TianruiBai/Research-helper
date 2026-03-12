@@ -142,25 +142,38 @@ def compute_comprehensive_score(
     confidence: float,
     market: float,
     public_sentiment: float = 50.0,
+    field_weights: dict[str, float] | None = None,
 ) -> float:
     """Comprehensive score — weighted blend of ALL dimension scores.
 
     This is the top-level "field health" score that answers:
     "How promising is this research area overall?"
 
-    Weights:
+    When field_weights is provided (from field_awareness.detect_field),
+    uses domain-specific weighting. Otherwise uses balanced defaults.
+
+    Default weights:
         Interest     25%  — Is the field active and growing?
         Confidence   20%  — Are results reliable? Public agrees?
         Market       25%  — Is there real-world / commercial interest?
         Motivation   15%  — Are there clear unsolved problems?
         Public       15%  — What does the general discourse say?
     """
+    if field_weights:
+        w_i = field_weights.get("interest", 0.25)
+        w_m = field_weights.get("motivation", 0.15)
+        w_c = field_weights.get("confidence", 0.20)
+        w_k = field_weights.get("market", 0.25)
+        w_s = field_weights.get("sentiment", 0.15)
+    else:
+        w_i, w_m, w_c, w_k, w_s = 0.25, 0.15, 0.20, 0.25, 0.15
+
     raw = (
-        0.25 * interest
-        + 0.15 * motivation
-        + 0.20 * confidence
-        + 0.25 * market
-        + 0.15 * public_sentiment
+        w_i * interest
+        + w_m * motivation
+        + w_c * confidence
+        + w_k * market
+        + w_s * public_sentiment
     )
     return min(round(raw, 1), 100.0)
 

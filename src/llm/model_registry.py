@@ -13,52 +13,45 @@ class ModelInfo:
     vram_gb: int
     best_for: str
     is_default: bool = False
+    supports_web_search: bool = False
+    partial_offload: bool = False  # can run with split GPU/CPU layers
 
 
 # Ordered by preference (first = recommended)
 MODELS: list[ModelInfo] = [
     ModelInfo(
-        name="qwen35-reasoning",
-        display_name="Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled (recommended)",
-        size_gb=17.0,
-        vram_gb=20,
-        best_for="Deep reasoning, gap analysis, narrative summary",
+        name="crow-9b-opus",
+        display_name="Crow-9B-Opus-4.6-Distill-Heretic (Qwen3.5 9B) — recommended",
+        size_gb=6.0,
+        vram_gb=4,
+        best_for="Field-context analysis, web-search-grounded reasoning",
         is_default=True,
-    ),
-    ModelInfo(
-        name="qwq:32b",
-        display_name="QwQ 32B",
-        size_gb=20.0,
-        vram_gb=24,
-        best_for="Chain-of-thought reasoning",
+        supports_web_search=True,
+        partial_offload=True,
     ),
     ModelInfo(
         name="deepseek-r1:14b",
         display_name="DeepSeek-R1 14B",
         size_gb=9.0,
         vram_gb=10,
-        best_for="Reasoning / gap analysis (lighter)",
-    ),
-    ModelInfo(
-        name="deepseek-r1:32b",
-        display_name="DeepSeek-R1 32B",
-        size_gb=20.0,
-        vram_gb=24,
-        best_for="Deep reasoning, proposal critique",
+        best_for="Reasoning / gap analysis (partial offload on 6 GB VRAM)",
+        partial_offload=True,
     ),
     ModelInfo(
         name="qwen2.5:14b",
         display_name="Qwen 2.5 14B",
         size_gb=9.0,
         vram_gb=10,
-        best_for="Balanced reasoning + speed",
+        best_for="Balanced reasoning + speed (partial offload on 6 GB VRAM)",
+        partial_offload=True,
     ),
     ModelInfo(
-        name="qwen2.5:32b",
-        display_name="Qwen 2.5 32B",
-        size_gb=20.0,
-        vram_gb=24,
-        best_for="Highest quality analysis",
+        name="phi4:14b",
+        display_name="Phi-4 14B",
+        size_gb=9.0,
+        vram_gb=10,
+        best_for="Structured JSON extraction",
+        partial_offload=True,
     ),
     ModelInfo(
         name="mistral:7b",
@@ -67,28 +60,21 @@ MODELS: list[ModelInfo] = [
         vram_gb=6,
         best_for="Fast summaries, low VRAM / CPU fallback",
     ),
-    ModelInfo(
-        name="phi4:14b",
-        display_name="Phi-4 14B",
-        size_gb=9.0,
-        vram_gb=10,
-        best_for="Structured JSON extraction",
-    ),
 ]
 
 # Fallback order
 FALLBACK_ORDER = [
-    "qwen3.5-reasoning",
-    "qwq:32b",
+    "crow-9b-opus",
     "deepseek-r1:14b",
     "qwen2.5:14b",
+    "phi4:14b",
     "mistral:7b",
 ]
 
 
 def get_default() -> str:
     """Return the default model name."""
-    return "qwen3.5-reasoning"
+    return "crow-9b-opus"
 
 
 def get_model_info(name: str) -> ModelInfo | None:
@@ -100,6 +86,16 @@ def get_model_info(name: str) -> ModelInfo | None:
 
 def get_all_models() -> list[ModelInfo]:
     return MODELS.copy()
+
+
+def get_field_context_model() -> str:
+    """Return the model name designated for field-context deep analysis."""
+    return "crow-9b-opus"
+
+
+def get_field_context_model_info() -> ModelInfo:
+    """Return ModelInfo for the field-context model."""
+    return get_model_info("crow-9b-opus") or MODELS[-1]
 
 
 async def find_best_available(installed: list[str]) -> str | None:

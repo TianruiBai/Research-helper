@@ -23,13 +23,14 @@ store: SQLiteStore | None = None
 library_store: LibraryStore | None = None
 pipeline: AnalyticsPipeline | None = None
 llm_client: LLMClient | None = None
+field_context_client: LLMClient | None = None
 hardware_info: HardwareInfo | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
-    global store, library_store, pipeline, llm_client, hardware_info
+    global store, library_store, pipeline, llm_client, field_context_client, hardware_info
 
     settings = get_settings()
 
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
             model=settings.llm.default_model,
             base_url=settings.llm.ollama_base_url,
             timeout=settings.llm.timeout_seconds,
+            web_search=settings.llm.web_search,
         )
         llm_available = await llm_client.health_check()
         if llm_available:
@@ -78,8 +80,31 @@ async def lifespan(app: FastAPI):
             logger.info("LLM server not running — using heuristic fallback")
             llm_client = None
 
+    # Initialise secondary (smaller) model client for field-context analysis
+    if not skip_llm:
+        fc_client = LLMClient(
+            model=settings.llm.field_context_model,
+            base_url=settings.llm.field_context_base_url,
+            timeout=settings.llm.field_context_timeout_seconds,
+            web_search=settings.llm.field_context_web_search,
+        )
+        fc_available = await fc_client.health_check()
+        if fc_available:
+            field_context_client = fc_client
+            logger.info(
+                "Field-context LLM available: %s @ %s (web_search=%s)",
+                fc_client.model, fc_client.base_url, fc_client.web_search,
+            )
+        else:
+            logger.info("Field-context server not running — will use primary model")
+            field_context_client = None
+
     # Initialise pipeline
-    pipeline = AnalyticsPipeline(llm_client=llm_client)
+    pipeline = AnalyticsPipeline(
+        llm_client=llm_client,
+        field_context_client=field_context_client,
+        use_parallel=settings.llm.max_concurrent_llm_calls > 1,
+    )
     await pipeline.check_llm()
 
     yield  # app runs

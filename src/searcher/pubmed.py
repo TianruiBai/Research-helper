@@ -37,12 +37,15 @@ class PubMedFetcher(AbstractFetcher):
             term += f" AND 1900:{year_end}[dp]"
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(self.ESEARCH_URL, params={
-                "db": "pubmed",
-                "term": term,
-                "retmax": min(max_results, 1000),
-                "retmode": "json",
-            })
+            resp = await self._request_with_retry(
+                client, "GET", self.ESEARCH_URL,
+                params={
+                    "db": "pubmed",
+                    "term": term,
+                    "retmax": min(max_results, 1000),
+                    "retmode": "json",
+                },
+            )
             resp.raise_for_status()
             search_data = resp.json()
             id_list = search_data.get("esearchresult", {}).get("idlist", [])
@@ -51,11 +54,14 @@ class PubMedFetcher(AbstractFetcher):
 
             # Step 2: efetch to get full records (XML)
             pmids = ",".join(id_list[:max_results])
-            resp2 = await client.get(self.EFETCH_URL, params={
-                "db": "pubmed",
-                "id": pmids,
-                "retmode": "xml",
-            })
+            resp2 = await self._request_with_retry(
+                client, "GET", self.EFETCH_URL,
+                params={
+                    "db": "pubmed",
+                    "id": pmids,
+                    "retmode": "xml",
+                },
+            )
             resp2.raise_for_status()
 
         return self._parse_xml(resp2.text)

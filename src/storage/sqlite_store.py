@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from src.storage.models import (
@@ -69,8 +71,21 @@ class SQLiteStore:
     ) -> list[Paper]:
         with self._session() as session:
             q = session.query(Paper)
-            if keyword:
-                q = q.filter(Paper.title.ilike(f"%{keyword}%"))
+            if keyword and keyword.strip():
+                # Split into individual terms; search title + abstract + keywords (OR logic)
+                terms = [
+                    t.strip()
+                    for t in re.split(r"[\s,;]+", keyword.strip())
+                    if len(t.strip()) > 1
+                ]
+                if terms:
+                    conditions = []
+                    for term in terms:
+                        like = f"%{term}%"
+                        conditions.append(Paper.title.ilike(like))
+                        conditions.append(Paper.abstract.ilike(like))
+                        conditions.append(Paper.keywords.ilike(like))
+                    q = q.filter(or_(*conditions))
             if year_start:
                 q = q.filter(Paper.year >= year_start)
             if year_end:

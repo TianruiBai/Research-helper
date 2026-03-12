@@ -41,7 +41,7 @@ class IEEEFetcher(AbstractFetcher):
             params["end_year"] = year_end
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(self.BASE_URL, params=params)
+            resp = await self._request_with_retry(client, "GET", self.BASE_URL, params=params)
             if resp.status_code == 429:
                 return []
             resp.raise_for_status()

@@ -197,6 +197,9 @@ class FieldStats:
     median_citations: float = 0.0
     h_index_estimate: int = 0
     top_cited_papers: list[tuple[str, int]] = dataclass_field(default_factory=list)
+    most_cited_authors: list[dict] = dataclass_field(default_factory=list)
+    top_cited_details: list[dict] = dataclass_field(default_factory=list)
+    venue_impact: list[dict] = dataclass_field(default_factory=list)
 
     # Structure
     top_venues: list[tuple[str, int]] = dataclass_field(default_factory=list)
@@ -228,6 +231,20 @@ class FieldStats:
     field_narrative: str | None = None
     maturity_label: str | None = None
 
+    # Field-awareness
+    field_category: str | None = None
+    field_display_name: str | None = None
+    field_pace: str | None = None
+
+    # Field-context deep analysis (LLM)
+    motivation_depth: str | None = None
+    confidence_assessment: str | None = None
+    market_reality: str | None = None
+    velocity_context: str | None = None
+    gaps_and_opportunities: list[str] | None = None
+    field_specific_risks: list[str] | None = None
+    recommended_focus_areas: list[str] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "query": self.query,
@@ -242,6 +259,9 @@ class FieldStats:
             "median_citations": self.median_citations,
             "h_index_estimate": self.h_index_estimate,
             "top_cited_papers": self.top_cited_papers,
+            "most_cited_authors": self.most_cited_authors,
+            "top_cited_details": self.top_cited_details,
+            "venue_impact": self.venue_impact,
             "top_venues": self.top_venues,
             "top_authors": self.top_authors,
             "country_distribution": self.country_distribution,
@@ -264,6 +284,16 @@ class FieldStats:
             "top_funders": self.top_funders,
             "field_narrative": self.field_narrative,
             "maturity_label": self.maturity_label,
+            "field_category": self.field_category,
+            "field_display_name": self.field_display_name,
+            "field_pace": self.field_pace,
+            "motivation_depth": self.motivation_depth,
+            "confidence_assessment": self.confidence_assessment,
+            "market_reality": self.market_reality,
+            "velocity_context": self.velocity_context,
+            "gaps_and_opportunities": self.gaps_and_opportunities,
+            "field_specific_risks": self.field_specific_risks,
+            "recommended_focus_areas": self.recommended_focus_areas,
         }
 
     @classmethod
@@ -274,6 +304,10 @@ class FieldStats:
         for key in ("top_cited_papers", "top_venues", "top_authors", "top_funders"):
             if key in data and data[key] is not None:
                 data[key] = [tuple(item) for item in data[key]]
+        # Strip unknown keys that may linger from schema changes
+        import dataclasses as _dc
+        valid = {f.name for f in _dc.fields(cls)}
+        data = {k: v for k, v in data.items() if k in valid}
         return cls(**data)
 
 

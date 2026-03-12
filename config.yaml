@@ -18,14 +18,23 @@ dedup:
   title_similarity_threshold: 0.92
 
 llm:
-  default_model: qwen35-reasoning
+  default_model: crow-9b-opus
   ollama_base_url: http://localhost:8080
+  # Set to 1 for single-slot llama-server (np=1, 6 GB VRAM).
+  # Increase to match llama-server --parallel (np) to run LLM tasks concurrently.
   max_concurrent_llm_calls: 1
   abstract_sample_size: 500
-  timeout_seconds: 120
+  timeout_seconds: 180
   temperature_classification: 0.3
   temperature_narrative: 0.7
   auto_detect_hardware: true
+  web_search: true
+  # Secondary server (optional) — only needed if running a 2nd llama-server on 8081
+  field_context_model: crow-9b-opus
+  field_context_base_url: http://localhost:8081
+  field_context_timeout_seconds: 180
+  field_context_web_search: true
+  field_context_ngl: -1
 
 storage:
   db_path: papers.db

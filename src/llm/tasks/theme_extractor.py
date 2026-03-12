@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from src.analytics.paper_selector import select_papers_for_llm
 from src.llm.client import LLMClient
 from src.llm.prompts import THEME_EXTRACTION_PROMPT, format_abstracts_batch
 from src.storage.models import Paper
@@ -15,15 +16,18 @@ async def extract_themes(
     papers: list[Paper],
     llm_client: LLMClient,
     batch_size: int = 8,
-    max_papers: int = 500,
+    max_papers: int = 80,
 ) -> list[str]:
     """Extract top research themes from paper abstracts via LLM.
 
+    Uses year-stratified, citation-weighted selection so every year is
+    represented and the LLM sees the most influential papers.
     Returns a deduplicated list of theme strings.
     """
+    selected = select_papers_for_llm(papers, max_papers=max_papers)
     abstracts = [
         (i, p.abstract)
-        for i, p in enumerate(papers[:max_papers])
+        for i, p in enumerate(selected)
         if p.abstract
     ]
     if not abstracts:

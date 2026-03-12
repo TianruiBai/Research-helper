@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -26,10 +26,45 @@ class LLMClient:
         model: str = "qwen35-reasoning",
         base_url: str = "http://localhost:8080",
         timeout: int = 120,
+        web_search: bool = False,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.web_search = web_search
+        # Set before LLM calls to stream tokens to a callback; clear after.
+        self._stream_callback: Callable[[str], None] | None = None
+
+    async def _complete_streaming(
+        self,
+        payload: dict[str, Any],
+        token_callback: Callable[[str], None],
+    ) -> str:
+        """Stream SSE chunks from the server, call token_callback per delta, return full text."""
+        full_text = ""
+        stream_payload = {**payload, "stream": True}
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/v1/chat/completions",
+                json=stream_payload,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"].get("content") or ""
+                        if delta:
+                            full_text += delta
+                            token_callback(delta)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+        return full_text
 
     async def health_check(self) -> bool:
         """Check if the LLM server is running and responsive."""
@@ -75,6 +110,10 @@ class LLMClient:
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if self.web_search:
+            payload["web_search_options"] = {"enable": True}
+        if self._stream_callback is not None:
+            return await self._complete_streaming(payload, self._stream_callback)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
                 f"{self.base_url}/v1/chat/completions",
@@ -102,13 +141,18 @@ class LLMClient:
             "stream": False,
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/chat/completions",
-                json=payload,
-            )
-            resp.raise_for_status()
-            raw_text = resp.json()["choices"][0]["message"]["content"]
+        if self.web_search:
+            payload["web_search_options"] = {"enable": True}
+        if self._stream_callback is not None:
+            raw_text = await self._complete_streaming(payload, self._stream_callback)
+        else:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=payload,
+                )
+                resp.raise_for_status()
+                raw_text = resp.json()["choices"][0]["message"]["content"]
 
         # Strip reasoning/thinking blocks (Qwen3.5, DeepSeek-R1, etc.)
         raw_text = re.sub(r"<think>[\s\S]*?</think>", "", raw_text).strip()

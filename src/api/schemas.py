@@ -105,6 +105,9 @@ class FieldStatsResponse(BaseModel):
     median_citations: float = 0.0
     h_index_estimate: int = 0
     top_cited_papers: list[list] = []
+    most_cited_authors: list[dict] = []
+    top_cited_details: list[dict] = []
+    venue_impact: list[dict] = []
     top_venues: list[list] = []
     top_authors: list[list] = []
     country_distribution: dict[str, int] = {}
@@ -127,6 +130,18 @@ class FieldStatsResponse(BaseModel):
     top_funders: list[list] | None = None
     field_narrative: str | None = None
     maturity_label: str | None = None
+    # Field awareness
+    field_category: str | None = None
+    field_display_name: str | None = None
+    field_pace: str | None = None
+    # Deep field-context analysis (LLM)
+    motivation_depth: str | None = None
+    confidence_assessment: str | None = None
+    market_reality: str | None = None
+    velocity_context: str | None = None
+    gaps_and_opportunities: list[str] | None = None
+    field_specific_risks: list[str] | None = None
+    recommended_focus_areas: list[str] | None = None
 
 
 class SearchResponse(BaseModel):

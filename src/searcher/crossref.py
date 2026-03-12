@@ -46,13 +46,13 @@ class CrossrefFetcher(AbstractFetcher):
                 if filt_parts:
                     params["filter"] = ",".join(filt_parts)
 
-                resp = await client.get(
-                    self.BASE_URL,
+                resp = await self._request_with_retry(
+                    client, "GET", self.BASE_URL,
                     params=params,
                     headers={"User-Agent": "ResearchFieldIntelTool/1.0 (mailto:user@example.com)"},
                 )
                 if resp.status_code == 429:
-                    break
+                    break  # retries exhausted
                 resp.raise_for_status()
                 data = resp.json()
                 items = data.get("message", {}).get("items", [])
