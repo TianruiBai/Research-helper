@@ -18,6 +18,15 @@ from src.storage.sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
+# Ensure our application logs are visible at INFO level
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+# LLM client: DEBUG for raw-response diagnostics
+logging.getLogger("src.llm.client").setLevel(logging.DEBUG)
+
 # Global singletons set during startup
 store: SQLiteStore | None = None
 library_store: LibraryStore | None = None

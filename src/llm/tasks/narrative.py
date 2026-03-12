@@ -53,7 +53,7 @@ async def generate_narrative(
     )
 
     try:
-        result = await llm_client.complete_json(prompt, temperature=0.7)
+        result = await llm_client.complete_json(prompt, temperature=0.7, max_tokens=8192)
         return {
             "narrative": result.get("narrative", ""),
             "maturity_label": result.get("maturity_label", "Unknown"),
